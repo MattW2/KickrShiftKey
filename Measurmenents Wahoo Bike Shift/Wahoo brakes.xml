@@ -1,0 +1,85 @@
+<macro name="Wahoo brakes" icon="PLAY">
+   <assert-service description="Ensure a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b service" uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-characteristic description="Ensure a026e03c-0a7d-4ab3-97fa-f1500f9feb8b characteristic" uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b">
+         <property name="NOTIFY" requirement="MANDATORY"/>
+      </assert-characteristic>
+   </assert-service>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C13210E6B742F1E45" value="FF0F034C300C13210E6B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x40008F" value="40008F"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C13218F6B742F1E45" value="FF0F034C300C13218F6B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x40000F" value="40000F"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C13210F6B742F1E45" value="FF0F034C300C13210F6B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x400090" value="400090"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C1321906B742F1E45" value="FF0F034C300C1321906B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x400010" value="400010"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C1321106B742F1E45" value="FF0F034C300C1321106B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x400091" value="400091"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C1321916B742F1E45" value="FF0F034C300C1321916B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x400011" value="400011"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C1321116B742F1E45" value="FF0F034C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F034C300C1321116B742F1E45" value="FF0F034C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x010084" value="010084"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x010004" value="010004"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F044C300C1321116B742F1E45" value="FF0F044C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x010085" value="010085"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F854C300C1321116B742F1E45" value="FF0F854C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x010005" value="010005"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F054C300C1321116B742F1E45" value="FF0F054C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x010086" value="010086"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F864C300C1321116B742F1E45" value="FF0F864C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0x010006" value="010006"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F064C300C1321116B742F1E45" value="FF0F064C300C1321116B742F1E45"/>
+   </wait-for-notification>
+   <wait-for-notification description="Wait for notification to a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" characteristic-uuid="a026e03c-0a7d-4ab3-97fa-f1500f9feb8b" service-uuid="a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b">
+      <assert-value description="Assert value equals 0xFF0F064C300C1321116B742F1E45" value="FF0F064C300C1321116B742F1E45"/>
+   </wait-for-notification>
+</macro>

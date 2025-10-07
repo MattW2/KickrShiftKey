@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>KICKR BIKE SHIFT — All Buttons (hard-coded, index-aware)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; padding: 1rem; }
+    button { padding: .6rem 1rem; font-size: 1rem; margin-right: .5rem; }
+    #status { margin-top: .6rem; }
+    #log { margin-top: 1rem; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace; border: 1px solid #ddd; padding: .75rem; border-radius: 6px; max-height: 50vh; overflow: auto; background: #fafafa; }
+    .pill { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .8rem; margin-left: .4rem; }
+    .press { background: #e6f4ea; color: #137333; border: 1px solid #c4e3ce; }
+    .release { background: #fce8e6; color: #a50e0e; border: 1px solid #f5c6c2; }
+    .hex { color: #555; }
+    .small { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>KICKR BIKE SHIFT — All Buttons</h1>
+  <p class="small">
+    Connects to any device whose name starts with <strong>KICKR BIKE SHIFT</strong>, subscribes to the Wahoo
+    characteristic, and decodes all 12 buttons (including brakes). Requires HTTPS/localhost + a user click.
+  </p>
+
+  <p>
+    <button id="connect">Connect (name starts with “KICKR BIKE SHIFT”)</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </p>
+  <div id="status">Status: <strong>Idle</strong></div>
+  <div id="device"></div>
+  <div id="log" aria-live="polite"></div>
+
+  <script>
+    // --- Wahoo GATT (from your traces) ---
+    const WAHOO_SERVICE_UUID = 'a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b';
+    const WAHOO_CHAR_UUID    = 'a026e03c-0a7d-4ab3-97fa-0f9feb8b'.replace('-0f9f','-f1500f9f'); // just to avoid typos
+    // (Equivalent to: 'a026e03c-0a7d-4ab3-97fa-f1500f9feb8b')
+
+    // --- Hard-coded button families (prefix = first two bytes of the 3-byte short frame) ---
+    // Press/Release is derived from MSB of the last byte (RR). Lower 7 bits are a rolling sequence.
+    const PREFIX_TO_BUTTON = {
+      '0001': 'Right Up',
+      '8000': 'Right Down',
+      '0008': 'Right Steer',
+      '0200': 'Left Up',
+      '0400': 'Left Down',
+      '2000': 'Left Steer',
+      '0004': 'Right Shift Up',
+      '0002': 'Right Shift Down',
+      '1000': 'Left Shift Up',
+      '0800': 'Left Shift Down',
+      '4000': 'Right Brake',  // <-- added
+      '0100': 'Left Brake'    // <-- added
+    };
+
+    let device, server, characteristic;
+    // Deduplicate per (prefix, type) using the 7-bit rolling sequence
+    const lastSeqByPrefix = new Map();
+
+    const $ = sel => document.querySelector(sel);
+    const time = () => new Date().toLocaleTimeString();
+    function log(msg='') {
+      $('#log').insertAdjacentHTML('beforeend', `[${time()}] ${msg}\n`);
+      const el = $('#log'); el.scrollTop = el.scrollHeight;
+    }
+    function setStatus(txt) { $('#status').innerHTML = `Status: <strong>${txt}</strong>`; }
+    function setDevice(txt) { $('#device').textContent = txt || ''; }
+
+    function toHex(dv) {
+      const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+
+    // Parse short frames like "PPQQRR" (e.g., "0001E6", "80005E", "40008F", "010004")
+    function parseShortFrame(hex) {
+      if (!/^[0-9A-F]{6}$/i.test(hex)) return null;
+      const prefix = hex.slice(0, 4); // PPQQ
+      const rrHex  = hex.slice(4, 6); // RR
+      if (!(prefix in PREFIX_TO_BUTTON)) return null;
+      const idx = parseInt(rrHex, 16);
+      const type = (idx & 0x80) ? 'press' : 'release'; // MSB of RR
+      const seq  = idx & 0x7F;                         // rolling counter for dedupe
+      return { prefix, rrHex, idx, type, seq, name: PREFIX_TO_BUTTON[prefix] };
+    }
+
+    function isLongFrame(hex) { return /^FF0F01/i.test(hex); } // for logging only
+
+    function shouldHandleOnce(prefix, type, seq) {
+      const key = `${prefix}:${type}`;
+      const last = lastSeqByPrefix.get(key);
+      if (last === seq) return false;
+      lastSeqByPrefix.set(key, seq);
+      return true;
+    }
+
+    async function connect() {
+      try {
+        setStatus('Requesting device…');
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'KICKR BIKE SHIFT' }],   // wildcard: "KICKR BIKE SHIFT *"
+          optionalServices: [WAHOO_SERVICE_UUID]
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        setStatus('Connecting…');
+        server = await device.gatt.connect();
+
+        const svc = await server.getPrimaryService(WAHOO_SERVICE_UUID);
+        characteristic = await svc.getCharacteristic(WAHOO_CHAR_UUID);
+
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', onNotification);
+
+        setStatus('Connected & listening');
+        $('#disconnect').disabled = false;
+        $('#connect').disabled = true;
+        setDevice(`Device: ${device.name} (${device.id})`);
+        log('Notifications started on characteristic ' + WAHOO_CHAR_UUID);
+      } catch (err) {
+        setStatus('Error');
+        log('ERROR: ' + err);
+        console.error(err);
+      }
+    }
+
+    async function disconnect() {
+      try {
+        $('#disconnect').disabled = true;
+        if (characteristic) {
+          try { await characteristic.stopNotifications(); } catch {}
+          characteristic.removeEventListener('characteristicvaluechanged', onNotification);
+        }
+        if (device?.gatt?.connected) device.gatt.disconnect();
+      } finally {
+        setStatus('Disconnected');
+        setDevice('');
+        $('#connect').disabled = false;
+        log('Disconnected.');
+      }
+    }
+
+    function onDisconnected() {
+      setStatus('Disconnected');
+      $('#connect').disabled = false;
+      $('#disconnect').disabled = true;
+      setDevice('');
+      log('GATT server disconnected.');
+    }
+
+    function onNotification(evt) {
+      const hex = toHex(evt.target.value);
+
+      // Short-frame detection (hard-coded families)
+      const s = parseShortFrame(hex);
+      if (s) {
+        if (shouldHandleOnce(s.prefix, s.type, s.seq)) {
+          log(`${s.name} ${s.type} <span class="pill ${s.type}">${s.type}</span> seq=${s.seq} ` +
+              `<span class="hex">(${s.prefix}${s.rrHex})</span>`);
+          // TODO: trigger actions here if you want (keypress/mouse/touch) based on s.name & s.type
+        }
+        return;
+      }
+
+      // Long frames aren't needed for detection here; log for diagnostics only
+      if (isLongFrame(hex)) {
+        log(`Long frame <span class="hex">${hex}</span>`);
+        return;
+      }
+
+      // Unknown frame — keep visible for reverse engineering
+      log(`Notification <span class="hex">${hex}</span>`);
+    }
+
+    // UI wiring
+    $('#connect').addEventListener('click', connect);
+    $('#disconnect').addEventListener('click', disconnect);
+  </script>
+</body>
+</html>

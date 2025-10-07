@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>KICKR BIKE SHIFT — Top-right Button (Index-aware)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; padding: 1rem; }
+    button { padding: .6rem 1rem; font-size: 1rem; }
+    #status { margin-top: .75rem; }
+    #log { margin-top: 1rem; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; border: 1px solid #ddd; padding: .75rem; border-radius: 6px; max-height: 40vh; overflow: auto; background: #fafafa; }
+    .pill { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 999px; font-size: .8rem; margin-left: .4rem; }
+    .press { background: #e6f4ea; color: #137333; border: 1px solid #c4e3ce; }
+    .release { background: #fce8e6; color: #a50e0e; border: 1px solid #f5c6c2; }
+    .hex { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>KICKR BIKE SHIFT — Top-right Button</h1>
+
+  <p>
+    <button id="connect">Connect to KICKR BIKE SHIFT B84D</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </p>
+  <div id="status">Status: <strong>Idle</strong></div>
+  <div id="device"></div>
+
+  <div id="log" aria-live="polite"></div>
+
+  <script>
+    // Wahoo GATT (from your XML trace)
+    const WAHOO_SERVICE_UUID = 'a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b';
+    const WAHOO_CHAR_UUID    = 'a026e03c-0a7d-4ab3-97fa-f1500f9feb8b';
+    const DEVICE_NAME        = 'KICKR BIKE SHIFT B84D';
+
+    let device, server, characteristic;
+
+    const $ = sel => document.querySelector(sel);
+    const logEl = $('#log');
+
+    function log(line = '') {
+      const time = new Date().toLocaleTimeString();
+      logEl.insertAdjacentHTML('beforeend', `[${time}] ${line}\n`);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setStatus(text) {
+      $('#status').innerHTML = `Status: <strong>${text}</strong>`;
+    }
+    function setDevice(text) {
+      $('#device').textContent = text || '';
+    }
+
+    function toHexFromDataView(dv) {
+      const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+
+    // --- Index-aware parse: 0001XX (MSB=1 -> press, MSB=0 -> release) ---
+    function parseIndexedPressRelease(hex) {
+      // Only handle short 3-byte frames exactly like "0001CE" etc.
+      const m = /^0001([0-9A-F]{2})$/.exec(hex);
+      if (!m) return null;
+      const code = parseInt(m[1], 16);
+      const seq  = code & 0x7F;          // rolling counter
+      const type = (code & 0x80) ? 'press' : 'release';
+      return { type, seq, codeHex: m[1] };
+    }
+
+    // Prevent handling the same index twice for a given state
+    const lastSeqHandled = { press: null, release: null };
+
+    async function connect() {
+      try {
+        setStatus('Requesting device…');
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: DEVICE_NAME }],
+          optionalServices: [WAHOO_SERVICE_UUID]
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        setStatus('Connecting…');
+        server = await device.gatt.connect();
+
+        const service = await server.getPrimaryService(WAHOO_SERVICE_UUID);
+        characteristic = await service.getCharacteristic(WAHOO_CHAR_UUID);
+
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', onNotification);
+
+        setStatus('Connected & listening');
+        $('#disconnect').disabled = false;
+        $('#connect').disabled = true;
+        setDevice(`Device: ${device.name} (${device.id})`);
+        log('Notifications started on characteristic ' + WAHOO_CHAR_UUID);
+      } catch (err) {
+        setStatus('Error');
+        log('ERROR: ' + err);
+        console.error(err);
+      }
+    }
+
+    async function disconnect() {
+      try {
+        $('#disconnect').disabled = true;
+        if (characteristic) {
+          try { await characteristic.stopNotifications(); } catch {}
+          characteristic.removeEventListener('characteristicvaluechanged', onNotification);
+        }
+        if (device?.gatt?.connected) device.gatt.disconnect();
+      } finally {
+        setStatus('Disconnected');
+        setDevice('');
+        $('#connect').disabled = false;
+        log('Disconnected.');
+      }
+    }
+
+    function onDisconnected() {
+      setStatus('Disconnected');
+      $('#connect').disabled = false;
+      $('#disconnect').disabled = true;
+      setDevice('');
+      log('GATT server disconnected.');
+    }
+
+    function onNotification(event) {
+      const dv  = event.target.value;
+      const hex = toHexFromDataView(dv);
+
+      // Try the short-form index-coded event first
+      const evt = parseIndexedPressRelease(hex);
+      if (evt) {
+        if (lastSeqHandled[evt.type] === evt.seq) {
+          // duplicate (some stacks emit current value again)
+          return;
+        }
+        lastSeqHandled[evt.type] = evt.seq;
+
+        log(`Top-right button ${evt.type} <span class="pill ${evt.type}">${evt.type}</span> seq=${evt.seq} <span class="hex">(0001${evt.codeHex})</span>`);
+        // TODO: trigger your app action here (e.g., send a key press on 'press', release on 'release')
+        return;
+      }
+
+      // Not an index-coded short frame; just show for diagnostics
+      log(`Notification <span class="hex">${hex}</span>`);
+    }
+
+    $('#connect').addEventListener('click', connect);
+    $('#disconnect').addEventListener('click', disconnect);
+  </script>
+</body>
+</html>

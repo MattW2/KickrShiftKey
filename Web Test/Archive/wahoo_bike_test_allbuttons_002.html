@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>KICKR BIKE SHIFT — All Buttons (index-aware)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; padding: 1rem; }
+    button { padding: .6rem 1rem; font-size: 1rem; margin-right: .5rem; }
+    #status { margin-top: .6rem; }
+    #log { margin-top: 1rem; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; border: 1px solid #ddd; padding: .75rem; border-radius: 6px; max-height: 45vh; overflow: auto; background: #fafafa; }
+    .pill { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .8rem; margin-left: .4rem; }
+    .press { background: #e6f4ea; color: #137333; border: 1px solid #c4e3ce; }
+    .release { background: #fce8e6; color: #a50e0e; border: 1px solid #f5c6c2; }
+    .hex { color: #555; }
+    .small { font-size: .9rem; color: #333; }
+    .map { margin-top: .75rem; font-size: .9rem; }
+    .map code { background: #f0f0f0; padding: 0 .25rem; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>KICKR BIKE SHIFT — All Buttons</h1>
+
+  <p class="small">Scans for device names starting with <strong>KICKR BIKE SHIFT</strong>, subscribes to Wahoo’s
+    service/characteristic, and decodes both long and short notifications. (Requires HTTPS/localhost + user gesture.)</p>
+
+  <p>
+    <button id="connect">Connect (name starts with “KICKR BIKE SHIFT”)</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <button id="resetMap" title="Forget learned mapping and start over">Reset mapping</button>
+  </p>
+  <div id="status">Status: <strong>Idle</strong></div>
+  <div id="device"></div>
+
+  <div class="map">
+    <strong>Auto‑learn order</strong> (used the first time a new button is seen):
+    <code>Right Up</code>, <code>Right Down</code>, <code>Right Steer</code>,
+    <code>Left Up</code>, <code>Left Down</code>, <code>Left Steer</code>,
+    <code>Right Shift Up</code>, <code>Right Shift Down</code>,
+    <code>Left Shift Up</code>, <code>Left Shift Down</code>.
+  </div>
+
+  <div id="log" aria-live="polite"></div>
+
+  <script>
+    // --- Wahoo GATT UUIDs (same ones in your XML & SwiftControl’s web template) ---
+    const WAHOO_SERVICE_UUID = 'a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b';
+    const WAHOO_CHAR_UUID    = 'a026e03c-0a7d-4ab3-97fa-f1500f9feb8b';
+
+    // --- Friendly names — the order you told me you pressed them (used for auto-learn) ---
+    const AUTO_LEARN_ORDER = [
+      'Right Up',
+      'Right Down',
+      'Right Steer',
+      'Left Up',
+      'Left Down',
+      'Left Steer',
+      'Right Shift Up',
+      'Right Shift Down',
+      'Left Shift Up',
+      'Left Shift Down'
+    ];
+
+    // --- Optional static hints from your logs (we’ll still auto-learn anything missing) ---
+    // These are stable "buttonId" bytes pulled from the long frames we’ve seen so far.
+    // If a mapping below turns out different on your bike firmware, the auto‑learn will override it.
+    const STATIC_HINTS = {
+      0x5D: 'Right Up',    // seen in long frames like ... 08 5D xx ...
+      0x5E: 'Right Down',  // seen in long frames like ... 08 5E xx ...
+      // others will be auto‑learned and stored in localStorage after first use
+    };
+
+    // --- Device/session state ---
+    let device, server, characteristic;
+
+    // ButtonId -> friendly name (persisted). We fill from STATIC_HINTS then localStorage.
+    const storageKey = 'kickr-bike-button-map';
+    const buttonMap = loadButtonMap();
+
+    // To pair long/short frames and dedupe per event:
+    // key: `${buttonId}:${type}` -> last sequence handled
+    const lastSeqByButton = new Map();
+    // last seen buttonId from a long frame:
+    let lastButtonId = null;
+
+    const $ = sel => document.querySelector(sel);
+    const logEl = $('#log');
+    const now  = () => new Date().toLocaleTimeString();
+
+    function log(line = '') {
+      logEl.insertAdjacentHTML('beforeend', `[${now()}] ${line}\n`);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setStatus(text) {
+      $('#status').innerHTML = `Status: <strong>${text}</strong>`;
+    }
+    function setDevice(text) { $('#device').textContent = text || ''; }
+
+    function loadButtonMap() {
+      const map = { ...STATIC_HINTS };
+      try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+        Object.assign(map, saved);
+      } catch {}
+      return map;
+    }
+    function saveButtonMap() {
+      localStorage.setItem(storageKey, JSON.stringify(buttonMap));
+    }
+
+    function toHex(dv) {
+      const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+
+    // ---- Short-frame parser (expanded set) ------------------------------------------
+    // Matches "PPQQRR" where PPQQ ∈ {0001, 8000, 0200, 0400, 2000, 1000, 0008, 0004}
+    function parseShortFrame(hex) {
+      const m = /^(0001|8000|0200|0400|2000|1000|0008|0004)([0-9A-F]{2})$/.exec(hex);
+      if (!m) return null;
+      const idx    = parseInt(m[2], 16);
+      const type   = (idx & 0x80) ? 'press' : 'release';
+      const seq    = idx & 0x7F;
+      return { type, seq, idxHex: m[2], prefix: m[1] };
+    }
+
+    // ---- Long-frame parser (generic, from your XMLs) --------------------------------
+    // We accept any FF0F01........ frame and grab the LAST "08 [id] [idx]" pair in it.
+    function parseLongFrame(hex) {
+      if (!/^FF0F01/i.test(hex)) return null;
+      const matches = [...hex.matchAll(/08([0-9A-F]{2})([0-9A-F]{2})/gi)];
+      if (matches.length === 0) return null;
+      const m   = matches[matches.length - 1]; // last occurrence is most reliable for this event
+      const id  = parseInt(m[1], 16);
+      const idx = parseInt(m[2], 16);
+      const type = (idx & 0x80) ? 'press' : 'release';
+      const seq  = idx & 0x7F;
+      return { buttonId: id, type, seq, idHex: m[1], idxHex: m[2] };
+    }
+
+    function getButtonName(buttonId) {
+      if (!(buttonId in buttonMap)) {
+        // Auto‑learn in your specified order
+        const alreadyUsed = new Set(Object.values(buttonMap));
+        const next = AUTO_LEARN_ORDER.find(name => !alreadyUsed.has(name));
+        buttonMap[buttonId] = next ?? `Button 0x${buttonId.toString(16).toUpperCase()}`;
+        saveButtonMap();
+        log(`Learned mapping: 0x${buttonId.toString(16).toUpperCase()} → ${buttonMap[buttonId]}`);
+      }
+      return buttonMap[buttonId];
+    }
+
+    function shouldHandleOnce(buttonId, type, seq) {
+      const key = `${buttonId}:${type}`;
+      const prev = lastSeqByButton.get(key);
+      if (prev === seq) return false;
+      lastSeqByButton.set(key, seq);
+      return true;
+    }
+
+    // ---- Bluetooth flow -------------------------------------------------------------
+    async function connect() {
+      try {
+        setStatus('Requesting device…');
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'KICKR BIKE SHIFT' }],   // wildcard match
+          optionalServices: [WAHOO_SERVICE_UUID]
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        setStatus('Connecting…');
+        server = await device.gatt.connect();
+
+        const service = await server.getPrimaryService(WAHOO_SERVICE_UUID);
+        characteristic = await service.getCharacteristic(WAHOO_CHAR_UUID);
+
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', onNotification);
+
+        setStatus('Connected & listening');
+        $('#disconnect').disabled = false;
+        $('#connect').disabled = true;
+        setDevice(`Device: ${device.name} (${device.id})`);
+        log('Notifications started on characteristic ' + WAHOO_CHAR_UUID);
+      } catch (err) {
+        setStatus('Error');
+        log('ERROR: ' + err);
+        console.error(err);
+      }
+    }
+
+    async function disconnect() {
+      try {
+        $('#disconnect').disabled = true;
+        if (characteristic) {
+          try { await characteristic.stopNotifications(); } catch {}
+          characteristic.removeEventListener('characteristicvaluechanged', onNotification);
+        }
+        if (device?.gatt?.connected) device.gatt.disconnect();
+      } finally {
+        setStatus('Disconnected');
+        setDevice('');
+        $('#connect').disabled = false;
+        log('Disconnected.');
+      }
+    }
+
+    function onDisconnected() {
+      setStatus('Disconnected');
+      $('#connect').disabled = false;
+      $('#disconnect').disabled = true;
+      setDevice('');
+      log('GATT server disconnected.');
+    }
+
+    function onNotification(event) {
+      const dv  = event.target.value;
+      const hex = toHex(dv);
+
+      // 1) Long frames (preferred)
+      const L = parseLongFrame(hex);
+      if (L) {
+        lastButtonId = L.buttonId;
+        const name = getButtonName(L.buttonId);
+        if (shouldHandleOnce(L.buttonId, L.type, L.seq)) {
+          log(`${name} ${L.type} <span class="pill ${L.type}">${L.type}</span> ` +
+              `seq=${L.seq} id=0x${L.buttonId.toString(16).toUpperCase()} ` +
+              `<span class="hex">(FF0F… 08${L.idHex}${L.idxHex} …)</span>`);
+          // TODO: trigger your action here (keypress/mouse/touch) based on `name` and `L.type`
+        }
+        return;
+      }
+
+      // 2) Short frames (pair with the last seen buttonId from a long frame)
+      const S = parseShortFrame(hex);
+      if (S) {
+        if (lastButtonId == null) {
+          log(`Short frame (no buttonId yet): ${S.type} seq=${S.seq} <span class="hex">(${hex})</span>`);
+          return;
+        }
+        const name = getButtonName(lastButtonId);
+        if (shouldHandleOnce(lastButtonId, S.type, S.seq)) {
+          log(`${name} ${S.type} <span class="pill ${S.type}">${S.type}</span> ` +
+              `seq=${S.seq} id=0x${lastButtonId.toString(16).toUpperCase()} ` +
+              `<span class="hex">(${S.prefix}${S.idxHex})</span>`);
+          // TODO: trigger your action here for `name` on press/release
+        }
+        return;
+      }
+
+      // 3) Unknown frame — keep it for reverse‑engineering
+      log(`Notification <span class="hex">${hex}</span>`);
+    }
+
+    // UI
+    $('#connect').addEventListener('click', connect);
+    $('#disconnect').addEventListener('click', disconnect);
+    $('#resetMap').addEventListener('click', () => {
+      localStorage.removeItem(storageKey);
+      for (const k of Object.keys(buttonMap)) delete buttonMap[k];
+      Object.assign(buttonMap, STATIC_HINTS);
+      lastSeqByButton.clear();
+      lastButtonId = null;
+      log('Mapping reset. Next unseen buttons will be learned using the configured order.');
+    });
+  </script>
+</body>
+</html>

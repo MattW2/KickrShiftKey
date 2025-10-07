@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>KICKR BIKE SHIFT — Long+Short Parsing (Dedup, 12 buttons)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; padding: 1rem; }
+    button { padding: .6rem 1rem; font-size: 1rem; margin-right: .5rem; }
+    #status { margin-top: .6rem; }
+    #log { margin-top: 1rem; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+           border: 1px solid #ddd; padding: .75rem; border-radius: 6px; max-height: 50vh; overflow: auto; background: #fafafa; }
+    .pill { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .8rem; margin-left: .4rem; }
+    .press { background: #e6f4ea; color: #137333; border: 1px solid #c4e3ce; }
+    .release { background: #fce8e6; color: #a50e0e; border: 1px solid #f5c6c2; }
+    .hex { color: #555; }
+    .small { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>KICKR BIKE SHIFT — Long+Short Parsing (Dedup)</h1>
+  <p class="small">
+    Connects to any device whose name starts with <strong>KICKR BIKE SHIFT</strong>, subscribes to the Wahoo notify characteristic,
+    and decodes both <em>long</em> and <em>short</em> frames. It <strong>fires once per event</strong> (prefers long frames;
+    short frames are deduped or used as fallback).
+  </p>
+
+  <p>
+    <button id="connect">Connect (name starts with “KICKR BIKE SHIFT”)</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </p>
+  <div id="status">Status: <strong>Idle</strong></div>
+  <div id="device"></div>
+  <div id="log" aria-live="polite"></div>
+
+  <script>
+    // --- Wahoo GATT (service + characteristic) ---
+    // These match your XML traces and SwiftControl's web implementation.
+    const WAHOO_SERVICE_UUID = 'a026ee0d-0a7d-4ab3-97fa-f1500f9feb8b';
+    const WAHOO_CHAR_UUID    = 'a026e03c-0a7d-4ab3-97fa-f1500f9feb8b';
+
+    // --- Hard-coded 12 buttons from your table (short-frame families) ---
+    // Each short frame is 3 bytes => 6 hex chars "PPQQRR"
+    //  - PPQQ is stable per button (family/prefix)
+    //  - RR's MSB is press/release ; lower 7 bits is a rolling sequence counter.
+    const PREFIX_TO_BUTTON = {
+      '0001': 'Right Up',
+      '8000': 'Right Down',
+      '0008': 'Right Steer',
+      '0200': 'Left Up',
+      '0400': 'Left Down',
+      '2000': 'Left Steer',
+      '0004': 'Right Shift Up',
+      '0002': 'Right Shift Down',
+      '1000': 'Left Shift Up',
+      '0800': 'Left Shift Down',
+      '4000': 'Right Brake',
+      '0100': 'Left Brake'
+    };
+
+    // --- Timing / dedup settings ---
+    const SHORT_FALLBACK_MS = 150;  // how long we wait for a matching long frame before firing a short
+    const MAX_PENDING = 24;         // cap pending short entries (sanity)
+
+    // --- Session state ---
+    let device, server, characteristic;
+
+    // Dedup stores
+    const lastSeqByIdType     = new Map(); // key: "id:type"      -> seq (for long frames)
+    const lastSeqByPrefixType = new Map(); // key: "prefix:type"  -> seq (for short frames)
+
+    // Associations between long-frame buttonId and short-frame prefix
+    const idToPrefix = {};  // { [id:number]: 'PPQQ' }
+    const prefixToId = {};  // { [prefix:string]: id }
+
+    // Optional: name cache for long-frame id (populated via idToPrefix -> PREFIX_TO_BUTTON)
+    const idToName = {};    // { [id:number]: 'Button Name' }
+
+    // Pending short events while we wait for the long counterpart
+    // key: `${prefix}|${type}|${seq}` -> {prefix, name, type, seq, t, timer}
+    const pendingShorts = new Map();
+
+    // ---- Utility helpers ----
+    const $ = sel => document.querySelector(sel);
+    const now = () => new Date().toLocaleTimeString();
+    function log(msg='') {
+      $('#log').insertAdjacentHTML('beforeend', `[${now()}] ${msg}\n`);
+      const el = $('#log'); el.scrollTop = el.scrollHeight;
+    }
+    function setStatus(txt) { $('#status').innerHTML = `Status: <strong>${txt}</strong>`; }
+    function setDevice(txt) { $('#device').textContent = txt || ''; }
+
+    function toHex(dv) {
+      const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+
+    // Short-frame parse: "PPQQRR"   (derive type/seq from RR)
+    function parseShortFrame(hex) {
+      if (!/^[0-9A-F]{6}$/i.test(hex)) return null;
+      const prefix = hex.slice(0, 4);
+      const rrHex  = hex.slice(4, 6);
+      if (!(prefix in PREFIX_TO_BUTTON)) return null; // we only care about mapped buttons
+      const idx = parseInt(rrHex, 16);
+      const type = (idx & 0x80) ? 'press' : 'release';
+      const seq  = idx & 0x7F;
+      return { prefix, rrHex, type, seq, name: PREFIX_TO_BUTTON[prefix] };
+    }
+
+    // Long-frame parse: "FF0F01..." — capture the LAST "08 [id] [idx]" pair in the frame
+    function parseLongFrame(hex) {
+      if (!/^FF0F01/i.test(hex)) return null;
+      const matches = [...hex.matchAll(/08([0-9A-F]{2})([0-9A-F]{2})/gi)];
+      if (matches.length === 0) return null;
+      const m   = matches[matches.length - 1];
+      const id  = parseInt(m[1], 16);
+      const idx = parseInt(m[2], 16);
+      const type = (idx & 0x80) ? 'press' : 'release';
+      const seq  = idx & 0x7F;
+      return { id, idHex: m[1].toUpperCase(), type, seq, idxHex: m[2].toUpperCase() };
+    }
+
+    function handledLong(id, type, seq) {
+      const key = `${id}:${type}`;
+      const prev = lastSeqByIdType.get(key);
+      if (prev === seq) return true;
+      lastSeqByIdType.set(key, seq);
+      return false;
+    }
+    function handledShort(prefix, type, seq) {
+      const key = `${prefix}:${type}`;
+      const prev = lastSeqByPrefixType.get(key);
+      if (prev === seq) return true;
+      lastSeqByPrefixType.set(key, seq);
+      return false;
+    }
+
+    function nameFromId(id) {
+      if (idToName[id]) return idToName[id];
+      const prefix = idToPrefix[id];
+      if (prefix && PREFIX_TO_BUTTON[prefix]) {
+        idToName[id] = PREFIX_TO_BUTTON[prefix];
+        return idToName[id];
+      }
+      return `Button 0x${id.toString(16).toUpperCase()}`;
+    }
+
+    function associateIdWithPrefix(id, prefix) {
+      if (idToPrefix[id] === prefix && prefixToId[prefix] === id) return;
+      idToPrefix[id] = prefix;
+      prefixToId[prefix] = id;
+      idToName[id] = PREFIX_TO_BUTTON[prefix] ?? idToName[id];
+      log(`Associated id=0x${id.toString(16).toUpperCase()} ↔ prefix ${prefix} (${PREFIX_TO_BUTTON[prefix] || 'Unknown'})`);
+    }
+
+    function queueShort(shortEvt) {
+      const key = `${shortEvt.prefix}|${shortEvt.type}|${shortEvt.seq}`;
+      if (pendingShorts.has(key)) return; // already queued
+      // Bound size to avoid unbounded growth
+      if (pendingShorts.size > MAX_PENDING) {
+        // drop the oldest
+        const oldestKey = pendingShorts.keys().next().value;
+        const old = pendingShorts.get(oldestKey);
+        clearTimeout(old.timer);
+        pendingShorts.delete(oldestKey);
+      }
+      const timer = setTimeout(() => flushShort(key), SHORT_FALLBACK_MS);
+      pendingShorts.set(key, { ...shortEvt, t: Date.now(), timer });
+    }
+
+    function cancelPendingShortsMatching(type, seq) {
+      // Cancel any queued short with same (type, seq). Likely only one at a time.
+      for (const [k, v] of pendingShorts) {
+        if (v.type === type && v.seq === seq) {
+          clearTimeout(v.timer);
+          pendingShorts.delete(k);
+        }
+      }
+    }
+
+    function findPendingShortFor(type, seq) {
+      // Return the most recent pending short that matches (type, seq)
+      let best = null;
+      for (const v of pendingShorts.values()) {
+        if (v.type === type && v.seq === seq) {
+          if (!best || v.t > best.t) best = v;
+        }
+      }
+      return best;
+    }
+
+    function flushShort(key) {
+      const v = pendingShorts.get(key);
+      if (!v) return; // already handled
+      pendingShorts.delete(key);
+
+      // If mapped to an ID and already handled via long, do nothing.
+      const id = prefixToId[v.prefix];
+      if (id != null) {
+        if (lastSeqByIdType.get(`${id}:${v.type}`) === v.seq) return; // long already fired
+      }
+      // If we already handled this short prefix seq/type, do nothing
+      if (handledShort(v.prefix, v.type, v.seq)) return;
+
+      // Fire fallback action from short event
+      handleAction(v.name, v.type, v.seq, { source: 'short', prefix: v.prefix, rrHex: v.rrHex });
+      // If we know its id, mark long dedup too to avoid a late long double-firing
+      if (id != null) lastSeqByIdType.set(`${id}:${v.type}`, v.seq);
+    }
+
+    function handleAction(name, type, seq, meta = {}) {
+      const metaStr = Object.entries(meta)
+        .map(([k, val]) => `${k}=${String(val).toUpperCase ? String(val).toUpperCase() : val}`)
+        .join(' ');
+      log(`${name} ${type} <span class="pill ${type}">${type}</span> seq=${seq}` +
+          (metaStr ? ` <span class="hex">(${metaStr})</span>` : ''));
+
+      // TODO: Wire your actual behavior here (keyboard/mouse/touch).
+      // Example:
+      // if (name === 'Right Shift Up' && type === 'press') sendKeyDown('K');
+      // if (name === 'Right Shift Up' && type === 'release') sendKeyUp('K');
+    }
+
+    // ---- Notification handling ----
+    function onNotification(evt) {
+      const hex = toHex(evt.target.value);
+
+      // 1) Try long frame first — preferred for firing
+      const L = parseLongFrame(hex);
+      if (L) {
+        // If there's a recently queued short with same (type, seq), associate id <-> prefix
+        const candidate = findPendingShortFor(L.type, L.seq);
+        if (candidate) associateIdWithPrefix(L.id, candidate.prefix);
+
+        // Dedup (long stream)
+        if (handledLong(L.id, L.type, L.seq)) {
+          // Already handled this long event; still cancel any matching pending short.
+          cancelPendingShortsMatching(L.type, L.seq);
+          return;
+        }
+
+        // If we know the corresponding prefix, mark short-stream dedup too
+        const knownPrefix = idToPrefix[L.id];
+        if (knownPrefix) lastSeqByPrefixType.set(`${knownPrefix}:${L.type}`, L.seq);
+
+        // Cancel and drop any pending short for the same (type, seq)
+        cancelPendingShortsMatching(L.type, L.seq);
+
+        // Fire action from long frame (preferred)
+        const name = nameFromId(L.id);
+        handleAction(name, L.type, L.seq, { source: 'long', id: `0x${L.idHex}`, idx: L.idxHex });
+        return;
+      }
+
+      // 2) Short frame — queue briefly to wait for its long counterpart
+      const S = parseShortFrame(hex);
+      if (S) {
+        // If already handled via short or (if mapped) long, bail
+        if (lastSeqByPrefixType.get(`${S.prefix}:${S.type}`) === S.seq) return;
+        const mappedId = prefixToId[S.prefix];
+        if (mappedId != null && lastSeqByIdType.get(`${mappedId}:${S.type}`) === S.seq) return;
+
+        // Queue it; if no long appears soon, we'll fire as fallback
+        queueShort(S);
+        return;
+      }
+
+      // 3) Unknown frame — keep for troubleshooting
+      log(`Notification <span class="hex">${hex}</span>`);
+    }
+
+    // ---- Bluetooth control ----
+    async function connect() {
+      try {
+        setStatus('Requesting device…');
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'KICKR BIKE SHIFT' }],   // wildcard: "KICKR BIKE SHIFT *"
+          optionalServices: [WAHOO_SERVICE_UUID]
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        setStatus('Connecting…');
+        server = await device.gatt.connect();
+
+        const svc = await server.getPrimaryService(WAHOO_SERVICE_UUID);
+        characteristic = await svc.getCharacteristic(WAHOO_CHAR_UUID);
+
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', onNotification);
+
+        setStatus('Connected & listening');
+        $('#disconnect').disabled = false;
+        $('#connect').disabled = true;
+        setDevice(`Device: ${device.name} (${device.id})`);
+        log('Notifications started on characteristic ' + WAHOO_CHAR_UUID);
+      } catch (err) {
+        setStatus('Error');
+        log('ERROR: ' + err);
+        console.error(err);
+      }
+    }
+
+    async function disconnect() {
+      try {
+        $('#disconnect').disabled = true;
+        if (characteristic) {
+          try { await characteristic.stopNotifications(); } catch {}
+          characteristic.removeEventListener('characteristicvaluechanged', onNotification);
+        }
+        if (device?.gatt?.connected) device.gatt.disconnect();
+      } finally {
+        setStatus('Disconnected');
+        setDevice('');
+        $('#connect').disabled = false;
+        log('Disconnected.');
+      }
+    }
+
+    function onDisconnected() {
+      setStatus('Disconnected');
+      $('#connect').disabled = false;
+      $('#disconnect').disabled = true;
+      setDevice('');
+      log('GATT server disconnected.');
+    }
+
+    // UI hooks
+    $('#connect').addEventListener('click', connect);
+    $('#disconnect').addEventListener('click', disconnect);
+  </script>
+</body>
+</html>

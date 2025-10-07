@@ -1,0 +1,12 @@
+# Requirements for wahoo_bike_shift_BLE_keyboard.py
+# Install with: python -m pip install -r requirements.txt
+
+bleak>=0.20
+pyautogui>=0.9.50
+Pillow>=9.0
+pywin32>=305; platform_system == "Windows"
+
+# Note: this requirements.txt is for the main script `wahoo_bike_shift_BLE_keyboard.py`.
+# Files under any `Archive/` directories may be older or experimental and can have
+# different dependencies. Inspect those files and install any extra packages they
+# require manually — do not assume the list above covers archived scripts.
